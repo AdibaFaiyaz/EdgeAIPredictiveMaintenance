@@ -37,7 +37,12 @@ MODEL_PATH = os.path.join(
 
 
 class EdgeAgent:
-    def __init__(self, model_path: str = MODEL_PATH) -> None:
+    def __init__(
+        self,
+        model_path: str = MODEL_PATH,
+        broker=None,
+        device_id: str = "motor-01",
+    ) -> None:
         if not os.path.exists(model_path):
             raise FileNotFoundError(
                 f"Model not found at {model_path}. Run: python src/train_model.py"
@@ -48,16 +53,26 @@ class EdgeAgent:
         self.window_size = bundle["window_size"]
         self._window: deque[list[float]] = deque(maxlen=self.window_size)
 
+        # Phase 2: optional message broker (mirrors AWS IoT Core).
+        self.broker = broker
+        self.device_id = device_id
+        self.topic = f"devices/{device_id}/anomalies"
+
         # Metrics for the bandwidth-savings story.
         self.total_samples = 0
         self.sent_events = 0
 
     def _publish(self, event: dict) -> None:
         """
-        Phase 1: just records that this event WOULD be sent to the cloud.
-        Phase 2: replace with an MQTT publish to AWS IoT Core.
+        Publish an anomaly event to the cloud.
+
+        Phase 1 (no broker): just records that this event WOULD be sent.
+        Phase 2 (broker set): publishes to the in-process broker that mirrors
+          AWS IoT Core. In the real-AWS migration this becomes an MQTT publish.
         """
         self.sent_events += 1
+        if self.broker is not None:
+            self.broker.publish(self.topic, event)
 
     def process(self, reading) -> dict | None:
         """Feed one reading through the model. Returns an event if anomalous."""

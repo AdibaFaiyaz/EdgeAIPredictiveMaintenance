@@ -66,9 +66,15 @@ edge-ai-predictive-maintenance/
 ├── src/
 │   ├── sensor_simulator.py   # simulated motor sensor (hardware swap point)
 │   ├── train_model.py        # trains the anomaly detector on healthy data
-│   └── edge_agent.py         # live on-device inference + bandwidth metrics
+│   ├── edge_agent.py         # live on-device inference + bandwidth metrics
+│   ├── run_pipeline.py       # Phase 2: end-to-end edge -> cloud runner
+│   └── cloud/                # in-process pipeline mirroring AWS (Phase 2)
+│       ├── message_broker.py # mirrors AWS IoT Core (pub/sub, MQTT topics)
+│       ├── message_processor.py  # mirrors AWS Lambda (event handler)
+│       ├── datastore.py      # mirrors DynamoDB (SQLite-backed)
+│       └── alert_handler.py  # mirrors AWS SNS (alerts)
 ├── models/                   # trained model artifacts (generated)
-├── data/                     # datasets (generated)
+├── data/                     # datasets + pipeline.db (generated)
 ├── requirements.txt
 └── README.md
 ```
@@ -120,6 +126,43 @@ python src/edge_agent.py --fault none
 
 ---
 
+## Phase 2 — End-to-end pipeline (mirrors AWS, runs locally)
+
+Phase 2 adds the cloud side as an **in-process pipeline that mirrors the AWS
+architecture 1:1**, so the whole system runs on your laptop with no AWS account
+required. Each component is written against an AWS-shaped interface, so
+migrating to real AWS is a localized change — callers don't move.
+
+| Local component (`src/cloud/`) | Mirrors AWS service | Role |
+|--------------------------------|---------------------|------|
+| `message_broker.py`            | **IoT Core**        | MQTT-style pub/sub with `+`/`#` topic wildcards |
+| `message_processor.py`         | **Lambda**          | Event handler: validate → store → alert |
+| `datastore.py`                 | **DynamoDB**        | Persists anomaly events + rolling device health |
+| `alert_handler.py`             | **SNS**             | Publishes severity-filtered alerts |
+
+Run the full pipeline (sensor → edge → broker → processor → store → alert):
+
+```bash
+# faulty motor — events flow through the whole chain and fire alerts
+python src/run_pipeline.py --fault combined --severity 0.8 --samples 400
+
+# healthy motor — nothing crosses the "network", 100% bandwidth reduction
+python src/run_pipeline.py --fault none --samples 400
+```
+
+The edge→cloud boundary is `EdgeAgent._publish()`, which publishes anomalies to
+the broker on topic `devices/<device_id>/anomalies`. For the real-AWS migration,
+that single call becomes an MQTT publish to AWS IoT Core.
+
+### Phase 2 results (measured locally)
+
+- Faulty run: edge published **281** events → IoT **281** → Lambda **281** →
+  DynamoDB **281** → SNS **281** (counts flow consistently end-to-end).
+- Healthy run: **0** events through the entire chain (**100%** bandwidth reduction).
+- Broker topic-wildcard matching (`+`, `#`) verified against MQTT semantics.
+
+---
+
 ## Phase 1 results (measured locally)
 
 - Healthy windows flagged as anomalies: **~1%** (low false-alarm rate)
@@ -135,9 +178,11 @@ python src/edge_agent.py --fault none
 ## Roadmap
 
 - **Phase 1 — Edge simulator + ML (local)** ✅ *done*
-- **Phase 2 — Connect edge → AWS:** publish anomalies to AWS IoT Core (MQTT),
-  process with Lambda, store in DynamoDB/Timestream, alert via SNS.
-  (`edge_agent.py::_publish()` is the integration point.)
+- **Phase 2 — Edge → cloud pipeline** ✅ *done (local AWS-mirror)* —
+  anomalies published to a broker (IoT Core), processed by a Lambda-equivalent,
+  stored in a DynamoDB-equivalent, and alerted via an SNS-equivalent.
+  Real-AWS swap: point `_publish()` at AWS IoT Core and move the processor into
+  a Lambda. *(Pending AWS account activation.)*
 - **Phase 3 — Dashboard + polish:** live web dashboard, anomaly history,
   device health; quantify bandwidth saved, detection lead time, inference
   latency.

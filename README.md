@@ -68,11 +68,15 @@ edge-ai-predictive-maintenance/
 │   ├── train_model.py        # trains the anomaly detector on healthy data
 │   ├── edge_agent.py         # live on-device inference + bandwidth metrics
 │   ├── run_pipeline.py       # Phase 2: end-to-end edge -> cloud runner
+│   ├── dashboard_server.py   # Phase 3: live web dashboard (stdlib HTTP server)
 │   └── cloud/                # in-process pipeline mirroring AWS (Phase 2)
 │       ├── message_broker.py # mirrors AWS IoT Core (pub/sub, MQTT topics)
 │       ├── message_processor.py  # mirrors AWS Lambda (event handler)
 │       ├── datastore.py      # mirrors DynamoDB (SQLite-backed)
-│       └── alert_handler.py  # mirrors AWS SNS (alerts)
+│       ├── alert_handler.py  # mirrors AWS SNS (alerts)
+│       ├── telemetry.py      # Phase 3: thread-safe live-state buffer
+│       └── static/
+│           └── index.html    # Phase 3: single-page dashboard (no external libs)
 ├── models/                   # trained model artifacts (generated)
 ├── data/                     # datasets + pipeline.db (generated)
 ├── requirements.txt
@@ -163,6 +167,56 @@ that single call becomes an MQTT publish to AWS IoT Core.
 
 ---
 
+## Phase 3 — Live web dashboard
+
+Phase 3 adds a real-time dashboard so the running pipeline is **visible**. It
+uses **only the Python standard library** (`http.server` + `threading`) and a
+single self-contained HTML page with **canvas charts (no external JS libs)** —
+staying consistent with the lightweight edge mindset.
+
+How it works:
+- A background thread runs the full pipeline continuously, pushing updates into
+  a thread-safe `Telemetry` buffer.
+- An HTTP server serves the page and a JSON API the page polls:
+  - `GET /` — the dashboard page
+  - `GET /api/state` — live snapshot (readings, anomalies, stage counters)
+  - `GET /api/health` — liveness probe
+
+The dashboard shows:
+- Live vibration + temperature charts with anomaly markers
+- Pipeline **stage counters** labeled by their AWS equivalent
+  (edge → IoT Core → Lambda → DynamoDB → SNS)
+- A live **anomaly feed** and a healthy/anomaly **status pill**
+- The running **bandwidth-reduction** metric
+
+Run it:
+
+```bash
+# healthy baseline
+python src/dashboard_server.py
+# ...then open http://localhost:8000
+
+# lively demo that alternates healthy and faulty phases
+python src/dashboard_server.py --cycle-faults
+```
+
+Options: `--port` (default 8000), `--cycle-faults`, `--delay` (seconds between
+samples; controls the live speed).
+
+### Phase 3 results (measured locally)
+
+- Server endpoints verified: `/api/health` → `{"ok":true}`, `/` serves the
+  dashboard, `/api/state` returns live JSON.
+- Fault-cycling run: stage counters stayed consistent
+  (e.g. 42 published = 42 processed = 42 stored = 42 alerts), status pill
+  flipped healthy ↔ anomaly as faults were injected.
+- Healthy baseline: 0 events through the chain, 100% bandwidth reduction.
+
+> **Screenshot:** _(add a screenshot of the running dashboard here — great for
+> the portfolio)._
+
+---
+
 ## Phase 1 results (measured locally)
 
 - Healthy windows flagged as anomalies: **~1%** (low false-alarm rate)
@@ -183,9 +237,9 @@ that single call becomes an MQTT publish to AWS IoT Core.
   stored in a DynamoDB-equivalent, and alerted via an SNS-equivalent.
   Real-AWS swap: point `_publish()` at AWS IoT Core and move the processor into
   a Lambda. *(Pending AWS account activation.)*
-- **Phase 3 — Dashboard + polish:** live web dashboard, anomaly history,
-  device health; quantify bandwidth saved, detection lead time, inference
-  latency.
+- **Phase 3 — Dashboard + polish** ✅ *done* — live web dashboard
+  (stdlib-only) showing real-time readings, anomaly feed, device status, and
+  per-stage pipeline counters mapped to their AWS equivalents.
 - **Phase 4 — Productionize:** Infrastructure-as-code (Terraform/CDK),
   CI/CD, architecture diagram, measured results.
 - **Hardware:** replace `read_sample()` with real accelerometer/temperature
@@ -196,4 +250,5 @@ that single call becomes an MQTT publish to AWS IoT Core.
 ## Tech
 
 Python · NumPy · pandas · scikit-learn (IsolationForest) · joblib
-AWS IoT Core · Lambda · DynamoDB/Timestream · SNS *(Phase 2+)*
+Python stdlib `http.server` + canvas (Phase 3 dashboard, no external libs)
+AWS IoT Core · Lambda · DynamoDB/Timestream · SNS *(mirrored locally; real-AWS swap pending)*

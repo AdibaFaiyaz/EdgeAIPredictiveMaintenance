@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Edge-AI Predictive Maintenance — Live</title>
+<style>
+  :root {
+    --bg: #0b0f1a; --panel: #141a2b; --panel2: #1b2338;
+    --text: #e8edff; --muted: #8b96b5; --line: #263150;
+    --ok: #22c55e; --warn: #f59e0b; --bad: #ef4444; --accent: #6366f1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 24px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  .status-pill {
+    padding: 6px 14px; border-radius: 999px; font-weight: 700; font-size: 13px;
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .status-healthy { background: rgba(34,197,94,.15); color: var(--ok); border: 1px solid var(--ok); }
+  .status-anomaly { background: rgba(239,68,68,.15); color: var(--bad); border: 1px solid var(--bad); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .55; } }
+
+  .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px 24px; }
+  .wide { grid-column: 1 / -1; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 12px; }
+
+  .stages { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .stage { background: var(--panel2); border-radius: 10px; padding: 12px; text-align: center; border: 1px solid var(--line); }
+  .stage .val { font-size: 24px; font-weight: 800; }
+  .stage .lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .stage .aws { font-size: 10px; color: var(--accent); margin-top: 4px; }
+
+  .metrics { display: flex; gap: 24px; flex-wrap: wrap; }
+  .metric .big { font-size: 28px; font-weight: 800; }
+  .metric .lbl { font-size: 11px; color: var(--muted); }
+
+  canvas { width: 100%; height: 180px; display: block; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+
+  .feed { max-height: 340px; overflow-y: auto; }
+  .feed .item { padding: 8px 10px; border-radius: 8px; background: var(--panel2); margin-bottom: 6px; border-left: 3px solid var(--bad); }
+  .feed .item.medium { border-left-color: var(--warn); }
+  .feed .item .top { display: flex; justify-content: space-between; font-weight: 700; }
+  .feed .item .sev-high { color: var(--bad); }
+  .feed .item .sev-medium { color: var(--warn); }
+  .feed .item .det { color: var(--muted); font-size: 12px; }
+  .empty { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>⚙️ Edge-AI Predictive Maintenance</h1>
+      <div class="sub">On-device anomaly detection → serverless-style pipeline · device <span id="device">—</span> · uptime <span id="uptime">0</span>s</div>
+    </div>
+    <div id="status" class="status-pill status-healthy">healthy</div>
+  </header>
+
+  <div class="grid">
+    <div class="panel wide">
+      <h2>Pipeline stages (mirrors AWS)</h2>
+      <div class="stages">
+        <div class="stage"><div class="val" id="c-samples">0</div><div class="lbl">Samples (edge)</div><div class="aws">on-device</div></div>
+        <div class="stage"><div class="val" id="c-published">0</div><div class="lbl">Published</div><div class="aws">IoT Core</div></div>
+        <div class="stage"><div class="val" id="c-processed">0</div><div class="lbl">Processed</div><div class="aws">Lambda</div></div>
+        <div class="stage"><div class="val" id="c-stored">0</div><div class="lbl">Stored</div><div class="aws">DynamoDB</div></div>
+        <div class="stage"><div class="val" id="c-alerts">0</div><div class="lbl">Alerts</div><div class="aws">SNS</div></div>
+      </div>
+      <div class="metrics" style="margin-top:16px">
+        <div class="metric"><div class="big" id="reduction">100%</div><div class="lbl">Bandwidth reduction (edge filtering)</div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Vibration (live)</h2>
+      <canvas id="vibChart"></canvas>
+      <div class="legend"><span><span class="dot" style="background:#60a5fa"></span>vibration</span><span><span class="dot" style="background:#ef4444"></span>anomaly</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Temperature (live)</h2>
+      <canvas id="tempChart"></canvas>
+      <div class="legend"><span><span class="dot" style="background:#f59e0b"></span>temperature °C</span></div>
+    </div>
+
+    <div class="panel wide">
+      <h2>Anomaly feed (would publish to cloud)</h2>
+      <div id="feed" class="feed"><div class="empty">No anomalies yet — motor running healthy.</div></div>
+    </div>
+  </div>
+
+<script>
+function drawChart(canvas, points, color, key, markAnomaly) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  if (!points.length) return;
+
+  const vals = points.map(p => p[key]);
+  let min = Math.min(...vals), max = Math.max(...vals);
+  if (min === max) { min -= 1; max += 1; }
+  const pad = (max - min) * 0.15; min -= pad; max += pad;
+  const x = i => (i / (points.length - 1 || 1)) * (w - 8) + 4;
+  const y = v => h - 4 - ((v - min) / (max - min)) * (h - 8);
+
+  // gridlines
+  ctx.strokeStyle = "rgba(255,255,255,0.05)"; ctx.lineWidth = 1;
+  for (let g = 0; g <= 3; g++) { const gy = 4 + g * (h - 8) / 3; ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke(); }
+
+  // line
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+  points.forEach((p, i) => { const px = x(i), py = y(p[key]); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+  ctx.stroke();
+
+  // anomaly markers
+  if (markAnomaly) {
+    points.forEach((p, i) => {
+      if (p.anomaly) { ctx.fillStyle = "#ef4444"; ctx.beginPath(); ctx.arc(x(i), y(p[key]), 3, 0, 7); ctx.fill(); }
+    });
+  }
+}
+
+function fmt(n) { return (n === null || n === undefined) ? "—" : n; }
+
+async function tick() {
+  try {
+    const res = await fetch("/api/state");
+    const s = await res.json();
+
+    document.getElementById("device").textContent = s.device_id;
+    document.getElementById("uptime").textContent = s.uptime_s;
+
+    const pill = document.getElementById("status");
+    pill.textContent = s.status;
+    pill.className = "status-pill " + (s.status === "anomaly" ? "status-anomaly" : "status-healthy");
+
+    document.getElementById("c-samples").textContent = s.counters.samples;
+    document.getElementById("c-published").textContent = s.counters.published;
+    document.getElementById("c-processed").textContent = s.counters.processed;
+    document.getElementById("c-stored").textContent = s.counters.stored;
+    document.getElementById("c-alerts").textContent = s.counters.alerts;
+    document.getElementById("reduction").textContent = Math.round(s.bandwidth_reduction * 100) + "%";
+
+    drawChart(document.getElementById("vibChart"), s.readings, "#60a5fa", "vibration", true);
+    drawChart(document.getElementById("tempChart"), s.readings, "#f59e0b", "temperature", false);
+
+    const feed = document.getElementById("feed");
+    if (!s.anomalies.length) {
+      feed.innerHTML = '<div class="empty">No anomalies yet — motor running healthy.</div>';
+    } else {
+      feed.innerHTML = s.anomalies.map(a => `
+        <div class="item ${a.severity}">
+          <div class="top">
+            <span class="sev-${a.severity}">${a.severity.toUpperCase()} anomaly</span>
+            <span class="det">t=${fmt(a.t)}s · score ${fmt(a.anomaly_score)}</span>
+          </div>
+          <div class="det">vibration ${fmt(a.vibration)} · temperature ${fmt(a.temperature)}°C</div>
+        </div>`).join("");
+    }
+  } catch (e) {
+    document.getElementById("status").textContent = "disconnected";
+  }
+}
+setInterval(tick, 500);
+tick();
+</script>
+</body>
+</html>
